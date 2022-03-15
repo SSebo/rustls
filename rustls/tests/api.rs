@@ -1404,7 +1404,7 @@ fn server_complete_io_for_read() {
             let mut pipe = OtherSession::new(&mut client);
             let (rdlen, wrlen) = server.complete_io(&mut pipe).unwrap();
             assert!(rdlen > 0 && wrlen == 0);
-            assert_eq!(pipe.reads, 1);
+            assert!(pipe.reads >= 1);
         }
         check_read(&mut server.reader(), b"01234567890123456789");
     }

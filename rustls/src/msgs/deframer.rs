@@ -1,8 +1,11 @@
+use bytes::{Buf, BytesMut};
 use std::collections::VecDeque;
 use std::io;
 
 use crate::msgs::codec;
 use crate::msgs::message::{MessageError, OpaqueMessage};
+
+pub const MAX_BUF_SIZE: usize = 1024;
 
 /// This deframer works to reconstruct TLS messages
 /// from arbitrary-sized reads, buffering as necessary.
@@ -18,7 +21,8 @@ pub struct MessageDeframer {
 
     /// A fixed-size buffer containing the currently-accumulating
     /// TLS message.
-    buf: Box<[u8; OpaqueMessage::MAX_WIRE_SIZE]>,
+    buf: Box<[u8; MAX_BUF_SIZE]>,
+    bff: BytesMut, //TODO: find a better name
 
     /// What size prefix of `buf` is used.
     used: usize,
@@ -47,7 +51,8 @@ impl MessageDeframer {
         Self {
             frames: VecDeque::new(),
             desynced: false,
-            buf: Box::new([0u8; OpaqueMessage::MAX_WIRE_SIZE]),
+            buf: Box::new([0u8; MAX_BUF_SIZE]),
+            bff: BytesMut::with_capacity(MAX_BUF_SIZE),
             used: 0,
         }
     }
@@ -61,8 +66,9 @@ impl MessageDeframer {
         // we do a zero length read.  That looks like an EOF to
         // the next layer up, which is fine.
         debug_assert!(self.used <= OpaqueMessage::MAX_WIRE_SIZE);
-        let new_bytes = rd.read(&mut self.buf[self.used..])?;
-
+        let new_bytes = rd.read(&mut self.buf[..])?;
+        self.bff
+            .extend_from_slice(&self.buf[..new_bytes]);
         self.used += new_bytes;
 
         loop {
@@ -91,7 +97,7 @@ impl MessageDeframer {
     /// If so, deframe it and place the message onto the frames output queue.
     fn try_deframe_one(&mut self) -> BufferContents {
         // Try to decode a message off the front of buf.
-        let mut rd = codec::Reader::init(&self.buf[..self.used]);
+        let mut rd = codec::Reader::init(&self.bff[..self.used]);
 
         match OpaqueMessage::read(&mut rd) {
             Ok(m) => {
@@ -109,6 +115,7 @@ impl MessageDeframer {
 
     #[allow(clippy::comparison_chain)]
     fn buf_consume(&mut self, taken: usize) {
+        self.bff.advance(taken);
         if taken < self.used {
             /* Before:
              * +----------+----------+----------+
@@ -123,8 +130,6 @@ impl MessageDeframer {
              * 0          ^ self.used
              */
 
-            self.buf
-                .copy_within(taken..self.used, 0);
             self.used -= taken;
         } else if taken == self.used {
             self.used = 0;
